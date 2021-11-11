@@ -286,9 +286,16 @@ public:
                    double Vroot[3]) const;
                    
     // added by Xingyu Su 2021/11/06
-    void readCSV(const std::string filename, MatrixXd &AlphaX, MatrixXd &Alphay);
-    void kernelFunc(const MatrixXd X1, const MatrixXd X2,  MatrixXd &K);
+    void readCSV(const std::string filename, std::vector< std::vector<double> > &output, int &nrow, int &ncol);
+    
+    void readAlphaData(const std::string filename, MatrixXd &AlphaX, MatrixXd &Alphay);
+    
+    void readAlphaPara(const std::string filename, VectorXd &BasisTheta, VectorXd &KernelGamma, double &KernelSigma);
+    
+    void kernelFunc(const int &i_kk, const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K);
+    
     void updateAlpha(double T, double P);
+    
     void mixAlpha();
 
 protected:
@@ -359,6 +366,10 @@ protected:
     std::vector<MatrixXd> m_AlphaK;
     std::vector<MatrixXd> m_AlphaKi;
     std::vector<MatrixXd> m_AlphaKx;
+    
+    std::vector<VectorXd> m_BasisTheta;
+    std::vector<VectorXd> m_KernelGamma;
+    std::vector<double> m_KernelSigma;
     
 private:
     //! Omega constant: a0 (= omega_a) used in Peng-Robinson equation of state

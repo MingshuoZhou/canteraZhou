@@ -33,10 +33,10 @@ PengRobinsonAlphaGP::PengRobinsonAlphaGP(const std::string& infile, const std::s
     initThermoFile(infile, id_);
 }
 
-void PengRobinsonAlphaGP::readCSV(const std::string filename, MatrixXd &AlphaX, MatrixXd &Alphay)
+void PengRobinsonAlphaGP::readCSV(const std::string filename, std::vector< std::vector<double> > &output, int &nrow, int &ncol)
 {
     int ndata = 0;
-    int nrow = 0;
+    nrow = 0;
     
     fstream input(filename, ios::in);
     if(!input.is_open()){
@@ -44,49 +44,87 @@ void PengRobinsonAlphaGP::readCSV(const std::string filename, MatrixXd &AlphaX, 
                   << filename << "not found!" << std::endl;
         return;
     }
-        
-    vector< vector<double> > output;
-    string csvLine;
+    
+    std::string csvLine;
     // read every line from the stream
     while(std::getline(input, csvLine))
     {
         istringstream csvStream(csvLine);
-        vector<double> csvColumn;
-        string csvElement;
+        std::vector<double> csvColumn;
+        std::string csvElement;
         while( getline(csvStream, csvElement, ',') )
         {
             csvColumn.push_back(std::stod(csvElement));
             ndata++;
-        }       
+        }
         output.push_back(csvColumn);
         nrow++;
     }
-    int ncol = ndata/nrow;
+    ncol = ndata/nrow;
+}
+
+
+void PengRobinsonAlphaGP::readAlphaData(const std::string filename, MatrixXd &AlphaX, MatrixXd &Alphay)
+{
+    int nrow = 0;
+    int ncol = 0;
+    std::vector< std::vector<double> > data;
+    
+    readCSV(filename, data, nrow, ncol);
 
     AlphaX.resize(nrow, ncol-1);
     Alphay.resize(nrow, 1);
 
     for(int i=0; i<nrow; ++i){
         for(int j=0; j<ncol-1; ++j){
-            AlphaX(i,j) = output[i][j];
+            AlphaX(i,j) = data[i][j];
         }
-        Alphay(i,0) = output[i][ncol-1];
+        Alphay(i,0) = data[i][ncol-1];
     }
 }
 
-void PengRobinsonAlphaGP::kernelFunc(const MatrixXd X1, const MatrixXd X2,  MatrixXd &K)
+void PengRobinsonAlphaGP::readAlphaPara(const std::string filename, VectorXd &BasisTheta, VectorXd &KernelGamma, double &KernelSigma)
+{
+    int nrow = 0;
+    int ncol = 0;
+    std::vector< std::vector<double> > para;
+    
+    readCSV(filename, para, nrow, ncol);
+    
+    KernelGamma.resize(ncol-1);
+    int i=0;
+    for(int j=0; j<ncol-1; ++j){
+        KernelGamma[j] = para[i][j];
+    }
+    KernelSigma = para[i][ncol-1];
+    
+    BasisTheta.resize(ncol);
+    if(nrow<=1){
+        i=1;
+        for(int j=0; j<ncol; ++j)
+            BasisTheta[j] = para[i][j];
+    }else{
+        for(int j=0; j<ncol; ++j)
+            BasisTheta[j] = 1;
+    }
+}
+
+
+void PengRobinsonAlphaGP::kernelFunc(const int &i_kk, const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K)
 {
     int ndim = X1.cols();
     int nrow = X1.rows();
     int ncol = X2.rows();
     
+    double sigma2 = m_KernelSigma[i_kk] * m_KernelSigma[i_kk];
+    VectorXd gamma2 = m_KernelGamma[i_kk] * m_KernelGamma[i_kk];
     for(int i=0; i<nrow; ++i){
         for(int j=0; j<ncol; ++j){
             double val = 0;
             for(int k=0; k<ndim; ++k){
-                val += - (X1(i,k)-X2(j,k)) * (X1(i,k)-X2(j,k)) / 2;
+                val += - (X1(i,k)-X2(j,k)) * (X1(i,k)-X2(j,k)) / gamma2[k];
             }
-            K(i,j) = exp(val);
+            K(i,j) = sigma2 * exp(val);
         }
     }
 }
@@ -103,11 +141,11 @@ void PengRobinsonAlphaGP::updateAlpha(double T, double P)
         Pr = P / Pc;
         AlphaXnew << Tr, Pr;
         
-        kernelFunc(m_AlphaX[k], AlphaXnew, m_AlphaKx[k]);
+        kernelFunc(k, m_AlphaX[k], AlphaXnew, m_AlphaKx[k]);
         m_alpha[k] = (m_AlphaKx[k].transpose() * m_AlphaKi[k] * m_Alphay[k]).value();
         
-        std::cout <<  AlphaXnew << std::endl;
-        std::cout << "Species alpha " << k << " " << m_alpha[k] << std::endl;
+        // std::cout <<  AlphaXnew << std::endl;
+        // std::cout << "Species alpha " << k << " " << m_alpha[k] << std::endl;
     }
 }
 
@@ -141,45 +179,36 @@ void PengRobinsonAlphaGP::setSpeciesCoeffs(const std::string& species, double a,
             "Unknown species '{}'.", species);
     }
     
-    // handling Alpha data
-    std::cout << "Reading alpha data of species " << species << std::endl;
+    // handling AlphaGP parameters
+    std::cout << "Reading Alpha para of species " << species << std::endl;
+    VectorXd BasisTheta;
+    VectorXd KernelGamma;
+    double KernelSigma;
+    readAlphaPara("mech/Alpha/"+species+"_para.csv", BasisTheta, KernelGamma, KernelSigma);
     
+    m_BasisTheta.push_back(BasisTheta);
+    m_KernelGamma.push_back(KernelGamma);
+    m_KernelSigma.push_back(KernelSigma);
+    
+    // handling AlphaGP data
+    std::cout << "Reading Alpha data of species " << species << std::endl;
     MatrixXd AlphaX;
     MatrixXd Alphay;    
-    readCSV("mech/Alpha/"+species+".csv", AlphaX, Alphay);
+    readAlphaData("mech/Alpha/"+species+".csv", AlphaX, Alphay);
     
     int N = AlphaX.rows();
-    
     MatrixXd AlphaK(N,N);
     MatrixXd AlphaKx(N,1);
-    kernelFunc(AlphaX, AlphaX, AlphaK);
+    kernelFunc(k, AlphaX, AlphaX, AlphaK);
     
     MatrixXd I = MatrixXd::Constant(N,N,1e-4).diagonal().asDiagonal();
-
-    // show K
-//     for(int i=0; i<5; ++i){
-//         for(int j=0; j<5; ++j){
-//             std::cout << AlphaK(i,j) << " ";
-//         }
-//         std::cout << std::endl;
-//     }
-
-    // show I
-//     for(int i=0; i<5; ++i){
-//         for(int j=0; j<5; ++j){
-//             std::cout << I(i,j) << " ";
-//         }
-//         std::cout << std::endl;
-//     }
+    MatrixXd AlphaKi = (AlphaK+I).inverse();
     
     m_AlphaX.push_back(AlphaX);
     m_Alphay.push_back(Alphay);
     m_AlphaK.push_back(AlphaK);
     m_AlphaKx.push_back(AlphaKx);
-    m_AlphaKi.push_back((AlphaK+I).inverse());
-    
-    // std::cout << AlphaX << std::endl;
-    // std::cout << Alphay << std::endl;
+    m_AlphaKi.push_back(AlphaKi);
     
     // Calculate value of kappa (independent of temperature)
     // w is an acentric factor of species
