@@ -142,15 +142,12 @@ void PengRobinsonAlphaGP::updateAlpha(double T, double P)
         AlphaXnew << Tr, Pr;
         
         kernelFunc(k, m_AlphaX[k], AlphaXnew, m_AlphaKx[k]);
-        m_alpha[k] = (m_AlphaKx[k].transpose() * m_AlphaKi[k] * m_Alphay[k]).value();
-        
-        // std::cout <<  AlphaXnew << std::endl;
-        // std::cout << "Species alpha " << k << " " << m_alpha[k] << std::endl;
+        m_alpha[k] = (m_AlphaKx[k].transpose() * m_Alpham[k]).value();
     }
 }
 
 void PengRobinsonAlphaGP::mixAlpha()
-{   
+{
     // update alpha mix
     for(size_t k = 0; k < m_kk; ++k){
         m_aAlpha_binary(k,k) = m_a_coeffs(k,k) * m_alpha[k];;
@@ -161,11 +158,8 @@ void PengRobinsonAlphaGP::mixAlpha()
             if (k == j) {
                 continue;
             }
-            double a_kj = sqrt(m_a_coeffs(j,j) * m_a_coeffs(k,k));
-            double a_Alpha_kj = a_kj*sqrt(m_alpha[j] * m_alpha[k]);
-            m_a_coeffs(j, k) = a_kj;
+            double a_Alpha_kj = m_a_coeffs(k,j)*sqrt(m_alpha[j] * m_alpha[k]);
             m_aAlpha_binary(j, k) = a_Alpha_kj;
-            m_a_coeffs(k, j) = a_kj;
             m_aAlpha_binary(k, j) = a_Alpha_kj;
         }
     }
@@ -203,12 +197,14 @@ void PengRobinsonAlphaGP::setSpeciesCoeffs(const std::string& species, double a,
     
     MatrixXd I = MatrixXd::Constant(N,N,1e-4).diagonal().asDiagonal();
     MatrixXd AlphaKi = (AlphaK+I).inverse();
-    
+    MatrixXd Alpham = AlphaKi*Alphay;
+
     m_AlphaX.push_back(AlphaX);
     m_Alphay.push_back(Alphay);
     m_AlphaK.push_back(AlphaK);
     m_AlphaKx.push_back(AlphaKx);
     m_AlphaKi.push_back(AlphaKi);
+    m_Alpham.push_back(Alpham);
     
     // Calculate value of kappa (independent of temperature)
     // w is an acentric factor of species
@@ -627,6 +623,20 @@ void PengRobinsonAlphaGP::initThermo()
             }
         }
     }
+
+    // mix a
+    for(size_t k = 0; k < m_kk; ++k){
+        for (size_t j = 0; j < m_kk; j++) {
+            if (k == j) {
+                continue;
+            }
+            double a_kj = sqrt(m_a_coeffs(j,j) * m_a_coeffs(k,k));
+            m_a_coeffs(j, k) = a_kj;
+            m_a_coeffs(k, j) = a_kj;
+        }
+    }
+
+    // mix alpha
     mixAlpha();
 }
 
@@ -916,16 +926,26 @@ void PengRobinsonAlphaGP::calculateAB(double& aCalc, double& bCalc, double& aAlp
 
 double PengRobinsonAlphaGP::daAlpha_dT() const
 {
-    double daAlphadT = 0.0, k, Tc, sqtTr, coeff1, coeff2;
-    for (size_t i = 0; i < m_kk; i++) {
-        // Calculate first derivative of alpha for individual species
-        Tc = speciesCritTemperature(m_a_coeffs(i,i), m_b_coeffs[i]);
-        sqtTr = sqrt(temperature() / Tc); //we need species critical temperature
-        coeff1 = 1 / (Tc*sqtTr);
-        coeff2 = sqtTr - 1;
-        k = m_kappa[i];
-        m_dalphadT[i] = coeff1 * (k*k*coeff2 - k);
+    // updateAlpha(temperature(), pressure());
+
+    int N;
+    double kxi, mi, Tc, Trx, Tri, GammaT2;
+    
+    for (size_t k = 0; k < m_kk; ++k) {
+        N = m_AlphaKx[k].rows();
+        Tc = speciesCritTemperature(m_a_coeffs(k,k), m_b_coeffs[k]);
+        Trx = temperature() / Tc;
+        GammaT2 = m_KernelGamma[k][0] * m_KernelGamma[k][0];
+
+        m_dalphadT[k] = 0;
+        for (int i = 0; i < N; ++i) {
+            Kxi = m_AlphaKx[k](i,1);
+            Tri = m_AlphaX[k](i,1);
+            mi = m_Alpham[k](i,1);
+            m_dalphadT[k] += -(Trx - Tri) / GammaT2 / Tc * mi * kxi;
+        }
     }
+
     //Calculate mixture derivative
     for (size_t i = 0; i < m_kk; i++) {
         for (size_t j = 0; j < m_kk; j++) {
@@ -938,15 +958,24 @@ double PengRobinsonAlphaGP::daAlpha_dT() const
 
 double PengRobinsonAlphaGP::d2aAlpha_dT2() const
 {
-    for (size_t i = 0; i < m_kk; i++) {
-        double Tcrit_i = speciesCritTemperature(m_a_coeffs(i, i), m_b_coeffs[i]);
-        double sqt_Tr = sqrt(temperature() / Tcrit_i); //we need species critical temperature
-        double coeff1 = 1 / (Tcrit_i*sqt_Tr);
-        double coeff2 = sqt_Tr - 1;
-        //  Calculate first and second derivatives of alpha for individual species
-        double k = m_kappa[i];
-        m_dalphadT[i] = coeff1 * (k*k*coeff2 - k);
-        m_d2alphadT2[i] = (k*k + k) * coeff1 / (2*sqt_Tr*sqt_Tr*Tcrit_i);
+    int N;
+    double kxi, mi, Tc, Trx, Tri, GammaT2, coeff1;
+    
+    for (size_t k = 0; k < m_kk; ++k) {
+        N = m_AlphaKx[k].rows();
+        Tc = speciesCritTemperature(m_a_coeffs(k,k), m_b_coeffs[k]);
+        Trx = temperature() / Tc;
+        GammaT2 = m_KernelGamma[k][0] * m_KernelGamma[k][0];
+
+        m_dalphadT[k] = 0;
+        for (int i = 0; i < N; ++i) {
+            Kxi = m_AlphaKx[k](i,1);
+            Tri = m_AlphaX[k](i,1);
+            mi = m_Alpham[k](i,1);
+            coeff1 = (Trx - Tri)*(Trx - Tri) / GammaT2 - 1;
+            m_dalphadT[k] += -(Trx - Tri) / GammaT2 / Tc * mi * kxi;
+            m_d2alphadT2[k] += coeff1 / GammaT2 / Tc / Tc * mi * kxi;
+        }
     }
 
     //Calculate mixture derivative

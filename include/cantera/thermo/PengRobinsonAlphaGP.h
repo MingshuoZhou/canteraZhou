@@ -366,7 +366,9 @@ protected:
     std::vector<MatrixXd> m_AlphaK;
     std::vector<MatrixXd> m_AlphaKi;
     std::vector<MatrixXd> m_AlphaKx;
+    std::vector<MatrixXd> m_AlphaM;
     
+
     std::vector<VectorXd> m_BasisTheta;
     std::vector<VectorXd> m_KernelGamma;
     std::vector<double> m_KernelSigma;
