@@ -987,7 +987,7 @@ double PengRobinsonAlphaGP::daAlpha_dT() const
         }
     }
 
-    std::cout << "daAlphadT:" << daAlphadT << std::endl;
+    // std::cout << "daAlphadT:" << daAlphadT << std::endl;
 
     return daAlphadT;
 }
