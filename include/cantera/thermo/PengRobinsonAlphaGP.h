@@ -292,11 +292,11 @@ public:
     
     void readAlphaPara(const std::string filename, VectorXd &BasisTheta, VectorXd &KernelGamma, double &KernelSigma);
     
-    void kernelFunc(const int &i_kk, const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K);
+    void kernelFunc(const int &i_kk, const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K) const;
     
-    void updateAlpha(double T, double P);
+    void updateAlpha(double T, double P) const;
     
-    void mixAlpha();
+    void mixAlpha() const;
 
 protected:
     //! Value of \f$b\f$ in the equation of state
@@ -323,12 +323,12 @@ protected:
     vector_fp m_kappa;
     mutable vector_fp m_dalphadT;
     mutable vector_fp m_d2alphadT2;
-    vector_fp m_alpha;
+    mutable vector_fp m_alpha;
 
     // Matrices for Binary coefficients a_{i,j} and {a*alpha}_{i.j} are saved in an Array form.
     // Length =  (m_kk, m_kk)
     Array2D m_a_coeffs;
-    Array2D m_aAlpha_binary;
+    mutable Array2D m_aAlpha_binary;
 
     int m_NSolns;
 
@@ -365,13 +365,13 @@ protected:
     std::vector<MatrixXd> m_Alphay;
     std::vector<MatrixXd> m_AlphaK;
     std::vector<MatrixXd> m_AlphaKi;
-    std::vector<MatrixXd> m_AlphaKx;
-    std::vector<MatrixXd> m_AlphaM;
+    std::vector<MatrixXd> m_Alpham;
     
-
     std::vector<VectorXd> m_BasisTheta;
     std::vector<VectorXd> m_KernelGamma;
     std::vector<double> m_KernelSigma;
+
+    mutable std::vector<MatrixXd> m_AlphaKx;
     
 private:
     //! Omega constant: a0 (= omega_a) used in Peng-Robinson equation of state

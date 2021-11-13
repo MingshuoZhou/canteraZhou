@@ -110,7 +110,7 @@ void PengRobinsonAlphaGP::readAlphaPara(const std::string filename, VectorXd &Ba
 }
 
 
-void PengRobinsonAlphaGP::kernelFunc(const int &i_kk, const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K)
+void PengRobinsonAlphaGP::kernelFunc(const int &i_kk, const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K) const
 {
     int ndim = X1.cols();
     int nrow = X1.rows();
@@ -122,14 +122,14 @@ void PengRobinsonAlphaGP::kernelFunc(const int &i_kk, const MatrixXd &X1, const 
         for(int j=0; j<ncol; ++j){
             double val = 0;
             for(int k=0; k<ndim; ++k){
-                val += - (X1(i,k)-X2(j,k)) * (X1(i,k)-X2(j,k)) / gamma2[k];
+                val += - (X1(i,k)-X2(j,k)) * (X1(i,k)-X2(j,k)) / 2 / gamma2[k];
             }
             K(i,j) = sigma2 * exp(val);
         }
     }
 }
 
-void PengRobinsonAlphaGP::updateAlpha(double T, double P)
+void PengRobinsonAlphaGP::updateAlpha(double T, double P) const
 {    
     double Tc, Pc, Tr, Pr;
     MatrixXd AlphaXnew(1,2);
@@ -146,7 +146,7 @@ void PengRobinsonAlphaGP::updateAlpha(double T, double P)
     }
 }
 
-void PengRobinsonAlphaGP::mixAlpha()
+void PengRobinsonAlphaGP::mixAlpha() const
 {
     // update alpha mix
     for(size_t k = 0; k < m_kk; ++k){
@@ -883,7 +883,10 @@ void PengRobinsonAlphaGP::calculatePressureDerivatives() const
 {
     double T = temperature();
     double mv = molarVolume();
-    double pres;
+    double pres = pressure();
+
+    updateAlpha(T, pres);
+    mixAlpha();
 
     m_dpdV = dpdVCalc(T, mv, pres);
     double vmb = mv - m_b;
@@ -926,8 +929,6 @@ void PengRobinsonAlphaGP::calculateAB(double& aCalc, double& bCalc, double& aAlp
 
 double PengRobinsonAlphaGP::daAlpha_dT() const
 {
-    // updateAlpha(temperature(), pressure());
-
     int N;
     double kxi, mi, Tc, Trx, Tri, GammaT2;
     
@@ -939,20 +940,55 @@ double PengRobinsonAlphaGP::daAlpha_dT() const
 
         m_dalphadT[k] = 0;
         for (int i = 0; i < N; ++i) {
-            Kxi = m_AlphaKx[k](i,1);
-            Tri = m_AlphaX[k](i,1);
-            mi = m_Alpham[k](i,1);
+            kxi = m_AlphaKx[k](i,0);
+            Tri = m_AlphaX[k](i,0);
+            mi = m_Alpham[k](i,0);
             m_dalphadT[k] += -(Trx - Tri) / GammaT2 / Tc * mi * kxi;
+            // // std::cout << m_Alpham[k] << "" << m_Alpham[k].rows() << " "<< m_Alpham[k].cols() << std::endl;
+            // std::cout << kxi << " " << GammaT2 << " " << Tc << " "
+            //           << mi << " " << (Trx - Tri) << std::endl;
         }
     }
 
+    // std::cout << "dalphadT:" << std::endl;
+    // for (size_t k = 0; k < m_kk; ++k) {
+    //     std::cout << m_dalphadT[k] << " ";
+    // }
+    // std::cout << std::endl;
+
+    // std::cout << "alpha:" << std::endl;
+    // for (size_t k = 0; k < m_kk; ++k) {
+    //     std::cout << m_alpha[k] << " ";
+    // }
+    // std::cout << std::endl;
+
+    // std::cout << "m_a_coeffs:" << std::endl;
+    // for (size_t i = 0; i < m_kk; i++) {
+    //     for (size_t j = 0; j < m_kk; j++) {
+    //         std::cout << m_a_coeffs(i,j) << " ";
+    //     }
+    //     std::cout << std::endl;
+    // }
+
+    // std::cout << "m_aAlpha_binary:" << std::endl;
+    // for (size_t i = 0; i < m_kk; i++) {
+    //     for (size_t j = 0; j < m_kk; j++) {
+    //         std::cout << m_aAlpha_binary(i,j) << " ";
+    //     }
+    //     std::cout << std::endl;
+    // }
+
     //Calculate mixture derivative
+    double daAlphadT = 0.0;
     for (size_t i = 0; i < m_kk; i++) {
         for (size_t j = 0; j < m_kk; j++) {
             daAlphadT += moleFractions_[i] * moleFractions_[j] * 0.5 * m_aAlpha_binary(i, j)
                                              * (m_dalphadT[i] / m_alpha[i] + m_dalphadT[j] / m_alpha[j]);
         }
     }
+
+    std::cout << "daAlphadT:" << daAlphadT << std::endl;
+
     return daAlphadT;
 }
 
@@ -968,10 +1004,11 @@ double PengRobinsonAlphaGP::d2aAlpha_dT2() const
         GammaT2 = m_KernelGamma[k][0] * m_KernelGamma[k][0];
 
         m_dalphadT[k] = 0;
+        m_d2alphadT2[k] = 0;
         for (int i = 0; i < N; ++i) {
-            Kxi = m_AlphaKx[k](i,1);
-            Tri = m_AlphaX[k](i,1);
-            mi = m_Alpham[k](i,1);
+            kxi = m_AlphaKx[k](i,0);
+            Tri = m_AlphaX[k](i,0);
+            mi = m_Alpham[k](i,0);
             coeff1 = (Trx - Tri)*(Trx - Tri) / GammaT2 - 1;
             m_dalphadT[k] += -(Trx - Tri) / GammaT2 / Tc * mi * kxi;
             m_d2alphadT2[k] += coeff1 / GammaT2 / Tc / Tc * mi * kxi;
