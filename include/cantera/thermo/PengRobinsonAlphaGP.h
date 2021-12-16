@@ -33,6 +33,45 @@ using namespace Eigen;
 
 namespace Cantera
 {
+
+/**
+ * Implementation of a Gaussian Process Model
+ */
+class GaussianProcess
+{
+public:
+    explicit GaussianProcess(const std::string& datapath="", const std::string& species="");
+
+    // added by Xingyu Su 2021/11/06
+    void readCSV(const std::string filename, std::vector< std::vector<double> > &output, int &nrow, int &ncol);
+    void readGPData(const std::string filename, MatrixXd &X, MatrixXd &y);
+    void readGPPara(const std::string filename, VectorXd &BasisTheta, VectorXd &KernelGamma, double &KernelSigma, MatrixXd &HessianMatrix, double &yscale);
+    void kernelFunc0(const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K) const;
+	void kernelFunc(const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K) const;
+    double predict(const MatrixXd &Xnew);
+	double predictGP(const MatrixXd &Xnew);
+	// added by Mingshuo
+	void basisFunc(const MatrixXd &X1, MatrixXd &F) const;
+	MatrixXd dfdtheta(const MatrixXd &X1) const;
+	MatrixXd hmatrix(const MatrixXd &X1, const MatrixXd &X2) const;
+protected:
+    MatrixXd m_X;
+    MatrixXd m_y;
+    MatrixXd m_K;
+    MatrixXd m_Ki;
+    MatrixXd m_m;
+	MatrixXd m_HessianMatrix;
+    MatrixXd m_F; // f(X)
+
+    VectorXd m_BasisTheta;
+    VectorXd m_KernelGamma;
+    double m_KernelSigmaF;
+    double m_yscale;
+
+    mutable MatrixXd m_Kx;
+	mutable MatrixXd m_dfdtheta;
+};
+
 /**
  * Implementation of a multi-species Peng-Robinson equation of state
  *
@@ -233,7 +272,7 @@ protected:
     virtual double hresid() const;
 
     virtual double liquidVolEst(double TKelvin, double& pres) const;
-    virtual double densityCalc(double TKelvin, double pressure, int phase, double rhoguess);
+    virtual double densityCalc(double T);
 
     virtual double densSpinodalLiquid() const;
     virtual double densSpinodalGas() const;
@@ -285,18 +324,11 @@ public:
     int solveCubic(double T, double pres, double a, double b, double aAlpha,
                    double Vroot[3]) const;
                    
-    // added by Xingyu Su 2021/11/06
-    void readCSV(const std::string filename, std::vector< std::vector<double> > &output, int &nrow, int &ncol);
-    
-    void readAlphaData(const std::string filename, MatrixXd &AlphaX, MatrixXd &Alphay);
-    
-    void readAlphaPara(const std::string filename, VectorXd &BasisTheta, VectorXd &KernelGamma, double &KernelSigma);
-    
-    void kernelFunc(const int &i_kk, const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K) const;
-    
-    void updateAlpha(double T, double P) const;
+    void updateAlpha(double T) const;
     
     void mixAlpha() const;
+
+	inline double GPpredict(GaussianProcess GP, double T, int k) const;
 
 protected:
     //! Value of \f$b\f$ in the equation of state
@@ -360,19 +392,14 @@ protected:
      *  other mole number kept constant
      */
     mutable vector_fp m_dpdni;
-    
-    std::vector<MatrixXd> m_AlphaX;
-    std::vector<MatrixXd> m_Alphay;
-    std::vector<MatrixXd> m_AlphaK;
-    std::vector<MatrixXd> m_AlphaKi;
-    std::vector<MatrixXd> m_Alpham;
-    
-    std::vector<VectorXd> m_BasisTheta;
-    std::vector<VectorXd> m_KernelGamma;
-    std::vector<double> m_KernelSigma;
 
-    mutable std::vector<MatrixXd> m_AlphaKx;
-    
+    mutable std::vector<GaussianProcess> m_alphaGP;
+    mutable std::vector<GaussianProcess> m_cpGP;
+    mutable std::vector<GaussianProcess> m_cpmoleGP;
+    mutable std::vector<GaussianProcess> m_denGP;
+    mutable std::vector<GaussianProcess> m_hresidGP;
+    mutable std::vector<GaussianProcess> m_sresidGP;
+
 private:
     //! Omega constant: a0 (= omega_a) used in Peng-Robinson equation of state
     /*!
@@ -389,6 +416,7 @@ private:
     //! Omega constant for the critical molar volume
     static const double omega_vc;
 };
+
 }
 
 #endif

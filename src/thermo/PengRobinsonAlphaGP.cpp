@@ -21,26 +21,43 @@ const double PengRobinsonAlphaGP::omega_a = 4.5723552892138218E-01;
 const double PengRobinsonAlphaGP::omega_b = 7.77960739038885E-02;
 const double PengRobinsonAlphaGP::omega_vc = 3.07401308698703833E-01;
 
-PengRobinsonAlphaGP::PengRobinsonAlphaGP(const std::string& infile, const std::string& id_) :
-    m_b(0.0),
-    m_a(0.0),
-    m_aAlpha_mix(0.0),
-    m_NSolns(0),
-    m_dpdV(0.0),
-    m_dpdT(0.0)
+GaussianProcess::GaussianProcess(const std::string &datapath, const std::string &species)
 {
-    fill_n(m_Vroot, 3, 0.0);
-    initThermoFile(infile, id_);
+    // handling AlphaGP parameters
+    std::cout << "Reading " << datapath << " of species para" << species << std::endl;
+    readGPPara(datapath+species+"_para.csv", m_BasisTheta, m_KernelGamma, m_KernelSigmaF, m_HessianMatrix ,m_yscale);
+    
+    // handling AlphaGP data
+    std::cout << "Reading Alpha data of species " << species << std::endl;  
+    readGPData(datapath+species+".csv", m_X, m_y);
+    
+    int N = m_X.rows();
+    
+	std::cout << "Calculating m_F ..." << std::endl;
+
+	m_F.resize(N,1);
+	basisFunc(m_X, m_F);
+    
+	std::cout << "Calculating kernelFunc ..." << std::endl;
+
+	m_K.resize(N,N);
+    m_Kx.resize(N,1);
+    kernelFunc(m_X, m_X, m_K);
+
+	std::cout << "Calculating m_Ki ..." << std::endl;
+
+	MatrixXd I = MatrixXd::Constant(N,N,1e-4).diagonal().asDiagonal();
+    m_Ki = (m_K+I).inverse();
 }
 
-void PengRobinsonAlphaGP::readCSV(const std::string filename, std::vector< std::vector<double> > &output, int &nrow, int &ncol)
+void GaussianProcess::readCSV(const std::string filename, std::vector< std::vector<double> > &output, int &nrow, int &ncol)
 {
     int ndata = 0;
     nrow = 0;
     
     fstream input(filename, ios::in);
     if(!input.is_open()){
-        std::cout << "PengRobinsonAlphaGP::readCSV file " 
+        std::cout << "GaussianProcess::readCSV file " 
                   << filename << "not found!" << std::endl;
         return;
     }
@@ -64,7 +81,7 @@ void PengRobinsonAlphaGP::readCSV(const std::string filename, std::vector< std::
 }
 
 
-void PengRobinsonAlphaGP::readAlphaData(const std::string filename, MatrixXd &AlphaX, MatrixXd &Alphay)
+void GaussianProcess::readGPData(const std::string filename, MatrixXd &X, MatrixXd &y)
 {
     int nrow = 0;
     int ncol = 0;
@@ -72,18 +89,18 @@ void PengRobinsonAlphaGP::readAlphaData(const std::string filename, MatrixXd &Al
     
     readCSV(filename, data, nrow, ncol);
 
-    AlphaX.resize(nrow, ncol-1);
-    Alphay.resize(nrow, 1);
+    X.resize(nrow, ncol-1);
+    y.resize(nrow, 1);
 
     for(int i=0; i<nrow; ++i){
         for(int j=0; j<ncol-1; ++j){
-            AlphaX(i,j) = data[i][j];
+            X(i,j) = data[i][j];
         }
-        Alphay(i,0) = data[i][ncol-1];
+        y(i,0) = data[i][ncol-1] / m_yscale;
     }
 }
 
-void PengRobinsonAlphaGP::readAlphaPara(const std::string filename, VectorXd &BasisTheta, VectorXd &KernelGamma, double &KernelSigma)
+void GaussianProcess::readGPPara(const std::string filename, VectorXd &BasisTheta, VectorXd &KernelGamma, double &KernelSigmaF, MatrixXd &HessianMatrix, double &yscale)
 {
     int nrow = 0;
     int ncol = 0;
@@ -96,10 +113,10 @@ void PengRobinsonAlphaGP::readAlphaPara(const std::string filename, VectorXd &Ba
     for(int j=0; j<ncol-1; ++j){
         KernelGamma[j] = para[i][j];
     }
-    KernelSigma = para[i][ncol-1];
+    KernelSigmaF = para[i][ncol-1];
     
     BasisTheta.resize(ncol);
-    if(nrow<=1){
+    if(nrow>=1){
         i=1;
         for(int j=0; j<ncol; ++j)
             BasisTheta[j] = para[i][j];
@@ -107,17 +124,54 @@ void PengRobinsonAlphaGP::readAlphaPara(const std::string filename, VectorXd &Ba
         for(int j=0; j<ncol; ++j)
             BasisTheta[j] = 1;
     }
+	
+	HessianMatrix.resize(ncol,ncol);
+	for(int i=0; i<ncol; ++i){
+		for(int j=0; j<ncol; ++j){
+			HessianMatrix(i,j)=para[i+2][j];
+		}
+	}
+    std::cout << "nrow=" << nrow << " ncol=" << ncol << std::endl; 
+    std::cout << "KernelSigmaF=" << KernelSigmaF << std::endl;
+
+    yscale = nrow <= ncol+2 ? 1 : para[ncol+2][0];
+
+    std::cout << "yscale=" << yscale << std::endl;
+    
+	//cout<<std::right << setw(3) <<BasisTheta<<","<<HessianMatrix;
 }
 
+void GaussianProcess::basisFunc(const MatrixXd &X1, MatrixXd &F) const
+{
+    int ndim = X1.cols();
+    int nrow = X1.rows();
+	for(int j=0; j<nrow; ++j){
+		F(j,0) = m_BasisTheta[0] + m_BasisTheta[1]*X1(j,0);
+		//cout<<X1(j,0)<<","<<X1(j,1)<<endl;
+	}
+}
 
-void PengRobinsonAlphaGP::kernelFunc(const int &i_kk, const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K) const
+MatrixXd GaussianProcess::dfdtheta(const MatrixXd &X1) const
+{
+    int ndim = X1.cols();
+    int nrow = X1.rows();
+
+	MatrixXd df(nrow,ndim+1);
+	for(int j=0; j<nrow; ++j){
+		df(j,0) = 1;
+		df(j,1) = X1(j,0);
+	}
+	return df;
+}
+
+void GaussianProcess::kernelFunc0(const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K) const
 {
     int ndim = X1.cols();
     int nrow = X1.rows();
     int ncol = X2.rows();
-    
-    double sigma2 = m_KernelSigma[i_kk] * m_KernelSigma[i_kk];
-    VectorXd gamma2 = m_KernelGamma[i_kk] * m_KernelGamma[i_kk];
+    //cout<<X2<<endl;
+    double sigma2 = m_KernelSigmaF * m_KernelSigmaF;
+    VectorXd gamma2 = m_KernelGamma * m_KernelGamma;
     for(int i=0; i<nrow; ++i){
         for(int j=0; j<ncol; ++j){
             double val = 0;
@@ -129,20 +183,93 @@ void PengRobinsonAlphaGP::kernelFunc(const int &i_kk, const MatrixXd &X1, const 
     }
 }
 
-void PengRobinsonAlphaGP::updateAlpha(double T, double P) const
-{    
-    double Tc, Pc, Tr, Pr;
-    MatrixXd AlphaXnew(1,2);
+MatrixXd GaussianProcess::hmatrix(const MatrixXd &X1, const MatrixXd &X2) const
+{
+    int ndim = X1.cols();
+    int N = X1.rows();
+	int M = X2.rows();
+	
+	MatrixXd Kx(N, M);
+	kernelFunc0(X1, X2, Kx); // Kx, MxN
+	
+	MatrixXd grad_f = dfdtheta(X1); // Nx3
+	MatrixXd h = grad_f.transpose() * Kx; // 3xM
+	return h;
+}
+
+void GaussianProcess::kernelFunc(const MatrixXd &X1, const MatrixXd &X2,  MatrixXd &K) const
+{
+    kernelFunc0(X1, X2, K);
+
+	// compensation terms from basis function
+	MatrixXd hXx = hmatrix(X1, X2); // 3xM
+	MatrixXd hXX = hmatrix(X1, X1); // 3xN
+
+	MatrixXd Hi =  m_HessianMatrix.completeOrthogonalDecomposition().pseudoInverse();
+	// std::cout << "Hi = " << setw(4) << Hi << std::endl;
+	// std::cout << "hXx = " << setw(4) << hXx << std::endl;
+    K = K + hXX.transpose() * Hi * hXx; // NxM
+}
+
+double GaussianProcess::predictGP(const MatrixXd &Xnew)
+{	
+	int N = m_X.rows();
+	MatrixXd K(N,N);
+	kernelFunc0(m_X, m_X, K);
+	MatrixXd I = MatrixXd::Constant(N,N,1e-4).diagonal().asDiagonal();
+    MatrixXd Ki = (K+I).inverse();
+	MatrixXd Kx(N,1);
+	kernelFunc0(m_X, Xnew, Kx);
+	double y = (Kx.transpose() * Ki * m_y).value()*m_yscale;
+
+	//  std::cout << "predict Xnew=" << setw(4) << Xnew << std::endl;
+	//  std::cout << "predict y=" << y << std::endl;
+    return y;
+}
+
+
+double GaussianProcess::predict(const MatrixXd &Xnew)
+{
+    // get Kx
+	MatrixXd f(1,1);
     
+	kernelFunc(m_X, Xnew, m_Kx);
+	basisFunc(Xnew, f);
+
+    //y(x) = f(x) + Kx.T * Ki * (y - f(X))
+	double y = ( f + m_Kx.transpose() * m_Ki * (m_y-m_F) ).value()*m_yscale;
+	// std::cout << "predict Xnew=" << setw(4) << Xnew << std::endl;
+	// std::cout << "predict Kx=" << setw(4) << m_Kx << std::endl;
+	// std::cout << "predict f=" << f << std::endl;
+	// std::cout << "predict y=" << y << std::endl;
+    return y;
+}
+
+PengRobinsonAlphaGP::PengRobinsonAlphaGP(const std::string& infile, const std::string& id_) :
+    m_b(0.0),
+    m_a(0.0),
+    m_aAlpha_mix(0.0),
+    m_NSolns(0),
+    m_dpdV(0.0),
+    m_dpdT(0.0)
+{
+    fill_n(m_Vroot, 3, 0.0);
+    initThermoFile(infile, id_);
+}
+
+inline double PengRobinsonAlphaGP::GPpredict(GaussianProcess GP, double T, int k) const
+{    
+    MatrixXd AlphaXnew(1,2);
+    double Tc = speciesCritTemperature(m_a_coeffs(k,k), m_b_coeffs[k]);
+    double Tr = T / Tc;
+    AlphaXnew << Tr;
+	return GP.predict(AlphaXnew);
+}
+
+void PengRobinsonAlphaGP::updateAlpha(double T) const
+{
     for(size_t k = 0; k < m_kk; ++k){
-        Tc = speciesCritTemperature(m_a_coeffs(k,k), m_b_coeffs[k]);
-        Pc = speciesCritPressure(m_a_coeffs(k,k), m_b_coeffs[k]);
-        Tr = T / Tc;
-        Pr = P / Pc;
-        AlphaXnew << Tr, Pr;
-        
-        kernelFunc(k, m_AlphaX[k], AlphaXnew, m_AlphaKx[k]);
-        m_alpha[k] = (m_AlphaKx[k].transpose() * m_Alpham[k]).value();
+        m_alpha[k] = GPpredict(m_alphaGP[k], T, k);
     }
 }
 
@@ -150,7 +277,7 @@ void PengRobinsonAlphaGP::mixAlpha() const
 {
     // update alpha mix
     for(size_t k = 0; k < m_kk; ++k){
-        m_aAlpha_binary(k,k) = m_a_coeffs(k,k) * m_alpha[k];;
+        m_aAlpha_binary(k,k) = m_a_coeffs(k,k) * m_alpha[k];
     }
     // standard mixing rule for cross-species interaction term
     for(size_t k = 0; k < m_kk; ++k){
@@ -173,38 +300,12 @@ void PengRobinsonAlphaGP::setSpeciesCoeffs(const std::string& species, double a,
             "Unknown species '{}'.", species);
     }
     
-    // handling AlphaGP parameters
-    std::cout << "Reading Alpha para of species " << species << std::endl;
-    VectorXd BasisTheta;
-    VectorXd KernelGamma;
-    double KernelSigma;
-    readAlphaPara("mech/Alpha/"+species+"_para.csv", BasisTheta, KernelGamma, KernelSigma);
-    
-    m_BasisTheta.push_back(BasisTheta);
-    m_KernelGamma.push_back(KernelGamma);
-    m_KernelSigma.push_back(KernelSigma);
-    
-    // handling AlphaGP data
-    std::cout << "Reading Alpha data of species " << species << std::endl;
-    MatrixXd AlphaX;
-    MatrixXd Alphay;    
-    readAlphaData("mech/Alpha/"+species+".csv", AlphaX, Alphay);
-    
-    int N = AlphaX.rows();
-    MatrixXd AlphaK(N,N);
-    MatrixXd AlphaKx(N,1);
-    kernelFunc(k, AlphaX, AlphaX, AlphaK);
-    
-    MatrixXd I = MatrixXd::Constant(N,N,1e-4).diagonal().asDiagonal();
-    MatrixXd AlphaKi = (AlphaK+I).inverse();
-    MatrixXd Alpham = AlphaKi*Alphay;
-
-    m_AlphaX.push_back(AlphaX);
-    m_Alphay.push_back(Alphay);
-    m_AlphaK.push_back(AlphaK);
-    m_AlphaKx.push_back(AlphaKx);
-    m_AlphaKi.push_back(AlphaKi);
-    m_Alpham.push_back(Alpham);
+    m_alphaGP.push_back(GaussianProcess("mech2/Alpha/", species));
+	m_cpGP.push_back(GaussianProcess("mech2/Cpmass/", species));
+    m_cpmoleGP.push_back(GaussianProcess("mech2/Cpmole/", species));
+    m_denGP.push_back(GaussianProcess("mech2/Density/", species));
+    m_hresidGP.push_back(GaussianProcess("mech2/Hmole/", species));
+    m_sresidGP.push_back(GaussianProcess("mech2/Smole/", species));
     
     // Calculate value of kappa (independent of temperature)
     // w is an acentric factor of species
@@ -249,16 +350,23 @@ void PengRobinsonAlphaGP::setBinaryCoeffs(const std::string& species_i,
 
 double PengRobinsonAlphaGP::cp_mole() const
 {
-    _updateReferenceStateThermo();
-    double T = temperature();
-    double mv = molarVolume();
-    double vpb = mv + (1 + Sqrt2) * m_b;
-    double vmb = mv + (1 - Sqrt2) * m_b;
-    calculatePressureDerivatives();
-    double cpref = GasConstant * mean_X(m_cp0_R);
-    double dHdT_V = cpref + mv * m_dpdT - GasConstant
-                    + 1.0 / (2.0 * Sqrt2 * m_b) * log(vpb / vmb) * T * d2aAlpha_dT2();
-    return dHdT_V - (mv + T * m_dpdT / m_dpdV) * m_dpdT;
+    // _updateReferenceStateThermo();
+    double cp_mole = 0;
+    for(size_t k = 0; k < m_kk; ++k){
+        double T =temperature();
+        // std::cout<<m_cpmole[k]<<std::endl;
+        cp_mole =cp_mole +  moleFractions_[k] * GPpredict(m_cpmoleGP[k], T, k);
+    }
+    return cp_mole;//J/kmol/K
+
+    // double mv = molarVolume();
+    // double vpb = mv + (1 + Sqrt2) * m_b;
+    // double vmb = mv + (1 - Sqrt2) * m_b;
+    // calculatePressureDerivatives();
+    // double cpref = GasConstant * mean_X(m_cp0_R);
+    // double dHdT_V = cpref + mv * m_dpdT - GasConstant
+    //                 + 1.0 / (2.0 * Sqrt2 * m_b) * log(vpb / vmb) * T * d2aAlpha_dT2();
+    //return dHdT_V - (mv + T * m_dpdT / m_dpdV) * m_dpdT;
 }
 
 double PengRobinsonAlphaGP::cv_mole() const
@@ -642,27 +750,44 @@ void PengRobinsonAlphaGP::initThermo()
 
 double PengRobinsonAlphaGP::sresid() const
 {
-    double molarV = molarVolume();
-    double hh = m_b / molarV;
-    double zz = z();
-    double alpha_1 = daAlpha_dT();
-    double vpb = molarV + (1.0 + Sqrt2) * m_b;
-    double vmb = molarV + (1.0 - Sqrt2) * m_b;
-    double fac = alpha_1 / (2.0 * Sqrt2 * m_b);
-    double sresid_mol_R = log(zz*(1.0 - hh)) + fac * log(vpb / vmb) / GasConstant;
-    return GasConstant * sresid_mol_R;
+    double smole = 0;
+    double T = temperature();
+    for(size_t k = 0; k < m_kk; ++k){
+        smole = smole +  moleFractions_[k] * GPpredict(m_sresidGP[k], T, k);
+    }
+    std::cout<<"smole="<<hmole<<std::endl;
+    
+    return hmole- GasConstant * (mean_X(m_s0_R) - sum_xlogx()
+        - std::log(pressure()/refPressure()));
+    // double molarV = molarVolume();
+    // double hh = m_b / molarV;
+    // double zz = z();
+    // double alpha_1 = daAlpha_dT();
+    // double vpb = molarV + (1.0 + Sqrt2) * m_b;
+    // double vmb = molarV + (1.0 - Sqrt2) * m_b;
+    // double fac = alpha_1 / (2.0 * Sqrt2 * m_b);
+    // double sresid_mol_R = log(zz*(1.0 - hh)) + fac * log(vpb / vmb) / GasConstant;
+    // return GasConstant * sresid_mol_R;
 }
 
 double PengRobinsonAlphaGP::hresid() const
 {
-    double molarV = molarVolume();
-    double zz = z();
-    double aAlpha_1 = daAlpha_dT();
+    double hmole = 0;
     double T = temperature();
-    double vpb = molarV + (1 + Sqrt2) * m_b;
-    double vmb = molarV + (1 - Sqrt2) * m_b;
-    double fac = 1 / (2.0 * Sqrt2 * m_b);
-    return GasConstant * T * (zz - 1.0) + fac * log(vpb / vmb) * (T * aAlpha_1 - m_aAlpha_mix);
+    for(size_t k = 0; k < m_kk; ++k){
+        hmole = hmole +  moleFractions_[k] * GPpredict(m_hresidGP[k], T, k);
+    }
+    std::cout<<"hmole="<<hmole<<std::endl;
+    
+    return hmole- RT() * mean_X(m_h0_RT);
+    // double molarV = molarVolume();
+    // double zz = z();
+    // double aAlpha_1 = daAlpha_dT();
+    // double T = temperature();
+    // double vpb = molarV + (1 + Sqrt2) * m_b;
+    // double vmb = molarV + (1 - Sqrt2) * m_b;
+    // double fac = 1 / (2.0 * Sqrt2 * m_b);
+    // return GasConstant * T * (zz - 1.0) + fac * log(vpb / vmb) * (T * aAlpha_1 - m_aAlpha_mix);
 }
 
 double PengRobinsonAlphaGP::liquidVolEst(double T, double& presGuess) const
@@ -719,13 +844,13 @@ void PengRobinsonAlphaGP::setPressure(doublereal p)
     
     double rhoNow = density();
     if (forcedState_ == FLUID_UNDEFINED) {
-        double rho = densityCalc(t, p, iState_, rhoNow);
+        double rho = densityCalc(t);
         if (rho > 0.0) {
             setDensity(rho);
             iState_ = phaseState(true);
         } else {
             if (rho < -1.5) {
-                rho = densityCalc(t, p, FLUID_UNDEFINED , rhoNow);
+                rho = densityCalc(t);
                 if (rho > 0.0) {
                     setDensity(rho);
                     iState_ = phaseState(true);
@@ -741,7 +866,7 @@ void PengRobinsonAlphaGP::setPressure(doublereal p)
     } else if (forcedState_ == FLUID_GAS) {
         // Normal density calculation
         if (iState_ < FLUID_LIQUID_0) {
-            double rho = densityCalc(t, p, iState_, rhoNow);
+            double rho = densityCalc(t);
             if (rho > 0.0) {
                 setDensity(rho);
                 iState_ = phaseState(true);
@@ -756,7 +881,7 @@ void PengRobinsonAlphaGP::setPressure(doublereal p)
         }
     } else if (forcedState_ > FLUID_LIQUID_0) {
         if (iState_ >= FLUID_LIQUID_0) {
-            double rho = densityCalc(t, p, iState_, rhoNow);
+            double rho = densityCalc(t);
             if (rho > 0.0) {
                 setDensity(rho);
                 iState_ = phaseState(true);
@@ -772,58 +897,64 @@ void PengRobinsonAlphaGP::setPressure(doublereal p)
     }
 }
 
-double PengRobinsonAlphaGP::densityCalc(double T, double presPa, int phaseRequested, double rhoGuess)
+double PengRobinsonAlphaGP::densityCalc(double T)//(double T, double presPa, int phaseRequested, double rhoGuess)
 {
-    // It's necessary to set the temperature so that m_aAlpha_mix is set correctly.
-    updateAlpha(T, presPa);
-    setTemperature(T);
-    double tcrit = critTemperature();
-    double mmw = meanMolecularWeight();
-    if (rhoGuess == -1.0) {
-        if (phaseRequested >= FLUID_LIQUID_0) {
-            double lqvol = liquidVolEst(T, presPa);
-            rhoGuess = mmw / lqvol;
-        }
-    } else {
-        // Assume the Gas phase initial guess, if nothing is specified to the routine
-        rhoGuess = presPa * mmw / (GasConstant * T);
+    double density = 0;
+    for(size_t k = 0; k < m_kk; ++k){
+        // std::cout<<m_density[k]<<std::endl;
+        density =density +  moleFractions_[k] * GPpredict(m_denGP[k], T, k);
     }
+    return density;
+    // // It's necessary to set the temperature so that m_aAlpha_mix is set correctly.
+    // updateAlpha(T, presPa);
+    // setTemperature(T);
+    // double tcrit = critTemperature();
+    // double mmw = meanMolecularWeight();
+    // if (rhoGuess == -1.0) {
+    //     if (phaseRequested >= FLUID_LIQUID_0) {
+    //         double lqvol = liquidVolEst(T, presPa);
+    //         rhoGuess = mmw / lqvol;
+    //     }
+    // } else {
+    //     // Assume the Gas phase initial guess, if nothing is specified to the routine
+    //     rhoGuess = presPa * mmw / (GasConstant * T);
+    // }
 
-    double volGuess = mmw / rhoGuess;
-    m_NSolns = solveCubic(T, presPa, m_a, m_b, m_aAlpha_mix, m_Vroot);
+    // double volGuess = mmw / rhoGuess;
+    // m_NSolns = solveCubic(T, presPa, m_a, m_b, m_aAlpha_mix, m_Vroot);
 
-    double molarVolLast = m_Vroot[0];
-    if (m_NSolns >= 2) {
-        if (phaseRequested >= FLUID_LIQUID_0) {
-            molarVolLast = m_Vroot[0];
-        } else if (phaseRequested == FLUID_GAS || phaseRequested == FLUID_SUPERCRIT) {
-            molarVolLast = m_Vroot[2];
-        } else {
-            if (volGuess > m_Vroot[1]) {
-                molarVolLast = m_Vroot[2];
-            } else {
-                molarVolLast = m_Vroot[0];
-            }
-        }
-    } else if (m_NSolns == 1) {
-        if (phaseRequested == FLUID_GAS || phaseRequested == FLUID_SUPERCRIT || phaseRequested == FLUID_UNDEFINED) {
-            molarVolLast = m_Vroot[0];
-        } else {
-            return -2.0;
-        }
-    } else if (m_NSolns == -1) {
-        if (phaseRequested >= FLUID_LIQUID_0 || phaseRequested == FLUID_UNDEFINED || phaseRequested == FLUID_SUPERCRIT) {
-            molarVolLast = m_Vroot[0];
-        } else if (T > tcrit) {
-            molarVolLast = m_Vroot[0];
-        } else {
-            return -2.0;
-        }
-    } else {
-        molarVolLast = m_Vroot[0];
-        return -1.0;
-    }
-    return mmw / molarVolLast;
+    // double molarVolLast = m_Vroot[0];
+    // if (m_NSolns >= 2) {
+    //     if (phaseRequested >= FLUID_LIQUID_0) {
+    //         molarVolLast = m_Vroot[0];
+    //     } else if (phaseRequested == FLUID_GAS || phaseRequested == FLUID_SUPERCRIT) {
+    //         molarVolLast = m_Vroot[2];
+    //     } else {
+    //         if (volGuess > m_Vroot[1]) {
+    //             molarVolLast = m_Vroot[2];
+    //         } else {
+    //             molarVolLast = m_Vroot[0];
+    //         }
+    //     }
+    // } else if (m_NSolns == 1) {
+    //     if (phaseRequested == FLUID_GAS || phaseRequested == FLUID_SUPERCRIT || phaseRequested == FLUID_UNDEFINED) {
+    //         molarVolLast = m_Vroot[0];
+    //     } else {
+    //         return -2.0;
+    //     }
+    // } else if (m_NSolns == -1) {
+    //     if (phaseRequested >= FLUID_LIQUID_0 || phaseRequested == FLUID_UNDEFINED || phaseRequested == FLUID_SUPERCRIT) {
+    //         molarVolLast = m_Vroot[0];
+    //     } else if (T > tcrit) {
+    //         molarVolLast = m_Vroot[0];
+    //     } else {
+    //         return -2.0;
+    //     }
+    // } else {
+    //     molarVolLast = m_Vroot[0];
+    //     return -1.0;
+    // }
+    // return mmw / molarVolLast;
 }
 
 double PengRobinsonAlphaGP::densSpinodalLiquid() const
@@ -885,7 +1016,7 @@ void PengRobinsonAlphaGP::calculatePressureDerivatives() const
     double mv = molarVolume();
     double pres = pressure();
 
-    updateAlpha(T, pres);
+    updateAlpha(T);
     mixAlpha();
 
     m_dpdV = dpdVCalc(T, mv, pres);
@@ -933,21 +1064,22 @@ double PengRobinsonAlphaGP::daAlpha_dT() const
     double kxi, mi, Tc, Trx, Tri, GammaT2;
     
     for (size_t k = 0; k < m_kk; ++k) {
-        N = m_AlphaKx[k].rows();
-        Tc = speciesCritTemperature(m_a_coeffs(k,k), m_b_coeffs[k]);
-        Trx = temperature() / Tc;
-        GammaT2 = m_KernelGamma[k][0] * m_KernelGamma[k][0];
-
         m_dalphadT[k] = 0;
-        for (int i = 0; i < N; ++i) {
-            kxi = m_AlphaKx[k](i,0);
-            Tri = m_AlphaX[k](i,0);
-            mi = m_Alpham[k](i,0);
-            m_dalphadT[k] += -(Trx - Tri) / GammaT2 / Tc * mi * kxi;
-            // // std::cout << m_Alpham[k] << "" << m_Alpham[k].rows() << " "<< m_Alpham[k].cols() << std::endl;
-            // std::cout << kxi << " " << GammaT2 << " " << Tc << " "
-            //           << mi << " " << (Trx - Tri) << std::endl;
-        }
+        // N = m_AlphaKx[k].rows();
+        // Tc = speciesCritTemperature(m_a_coeffs(k,k), m_b_coeffs[k]);
+        // Trx = temperature() / Tc;
+        // GammaT2 = 0; // m_KernelGamma[k][0] * m_KernelGamma[k][0];
+
+        // m_dalphadT[k] = 0;
+        // for (int i = 0; i < N; ++i) {
+        //     kxi = m_AlphaKx[k](i,0);
+        //     Tri = m_AlphaX[k](i,0);
+        //     mi = m_Alpham[k](i,0);
+        //     m_dalphadT[k] += -(Trx - Tri) / GammaT2 / Tc * mi * kxi;
+        //     // // std::cout << m_Alpham[k] << "" << m_Alpham[k].rows() << " "<< m_Alpham[k].cols() << std::endl;
+        //     // std::cout << kxi << " " << GammaT2 << " " << Tc << " "
+        //     //           << mi << " " << (Trx - Tri) << std::endl;
+        // }
     }
 
     // std::cout << "dalphadT:" << std::endl;
@@ -998,21 +1130,23 @@ double PengRobinsonAlphaGP::d2aAlpha_dT2() const
     double kxi, mi, Tc, Trx, Tri, GammaT2, coeff1;
     
     for (size_t k = 0; k < m_kk; ++k) {
-        N = m_AlphaKx[k].rows();
-        Tc = speciesCritTemperature(m_a_coeffs(k,k), m_b_coeffs[k]);
-        Trx = temperature() / Tc;
-        GammaT2 = m_KernelGamma[k][0] * m_KernelGamma[k][0];
-
         m_dalphadT[k] = 0;
         m_d2alphadT2[k] = 0;
-        for (int i = 0; i < N; ++i) {
-            kxi = m_AlphaKx[k](i,0);
-            Tri = m_AlphaX[k](i,0);
-            mi = m_Alpham[k](i,0);
-            coeff1 = (Trx - Tri)*(Trx - Tri) / GammaT2 - 1;
-            m_dalphadT[k] += -(Trx - Tri) / GammaT2 / Tc * mi * kxi;
-            m_d2alphadT2[k] += coeff1 / GammaT2 / Tc / Tc * mi * kxi;
-        }
+        // N = m_AlphaKx[k].rows();
+        // Tc = speciesCritTemperature(m_a_coeffs(k,k), m_b_coeffs[k]);
+        // Trx = temperature() / Tc;
+        // GammaT2 = m_KernelGamma[k][0] * m_KernelGamma[k][0];
+
+        // m_dalphadT[k] = 0;
+        // m_d2alphadT2[k] = 0;
+        // for (int i = 0; i < N; ++i) {
+        //     kxi = m_AlphaKx[k](i,0);
+        //     Tri = m_AlphaX[k](i,0);
+        //     mi = m_Alpham[k](i,0);
+        //     coeff1 = (Trx - Tri)*(Trx - Tri) / GammaT2 - 1;
+        //     m_dalphadT[k] += -(Trx - Tri) / GammaT2 / Tc * mi * kxi;
+        //     m_d2alphadT2[k] += coeff1 / GammaT2 / Tc / Tc * mi * kxi;
+        // }
     }
 
     //Calculate mixture derivative

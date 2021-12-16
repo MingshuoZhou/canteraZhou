@@ -238,7 +238,7 @@ public:
 
     /// Molar internal energy. Units: J/kmol.
     virtual doublereal intEnergy_mole() const {
-        return enthalpy_mole() - pressure()* molarVolume();
+        return enthalpy_mole() - pressure() * molarVolume();
     }
 
     /// Molar entropy. Units: J/kmol/K.
